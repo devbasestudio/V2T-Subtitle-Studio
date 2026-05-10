@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: v2t-subtitle-studio
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NODE_VERSION
+        value: 20

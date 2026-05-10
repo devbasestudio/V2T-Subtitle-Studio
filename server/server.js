@@ -54,6 +54,7 @@ const upload = multer({
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use('/media', express.static(uploadDir));
+app.use(express.static(path.join(rootDir, 'dist')));
 
 const runFfmpeg = (configure) =>
   new Promise((resolve, reject) => {
