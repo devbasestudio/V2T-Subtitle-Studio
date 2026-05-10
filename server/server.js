@@ -145,9 +145,14 @@ const transcribeChunk = async ({ chunkPath, chunkNumber, totalChunks, language }
 You are creating subtitles for a video editor.
 Transcribe every spoken word in this one-minute audio segment as accurately as possible.
 ${langInstruction}
-Preserve punctuation. Do not summarize or omit filler words.
+
+CRITICAL RULES TO PREVENT HALLUCINATION:
+1. If there is NO speech, or only background noise, static, or music, DO NOT output any subtitles. You must return absolutely nothing.
+2. DO NOT invent, guess, or hallucinate text. NEVER add random commentary, conversational fillers, or political statements that are not explicitly spoken in the audio.
+3. Transcribe ONLY what is clearly spoken by humans.
+
 Return only valid SubRip (.srt) content. Do not wrap it in Markdown.
-Start timestamps at 00:00:00,000 for this segment. Keep every timestamp inside this segment.
+Start timestamps at 00:00:00,000 for this segment.
 Use short subtitle cues that are natural for on-screen subtitles.
 Segment ${chunkNumber} of ${totalChunks}.
 `.trim();
