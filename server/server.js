@@ -225,6 +225,59 @@ app.get('/api/health', (_request, response) => {
   response.json({ ok: true, model });
 });
 
+app.post('/api/translate', async (request, response) => {
+  const { srt, language } = request.body;
+  if (!srt || !language) return response.status(400).json({ error: 'Missing srt or language' });
+
+  const prompt = `
+You are an expert subtitle translator.
+Translate the following SubRip (.srt) subtitle text into ${language}.
+
+CRITICAL RULES:
+1. Preserve the exact block numbers and timestamps. DO NOT change any timestamps.
+2. Only translate the spoken text.
+3. Keep the exact same formatting (.srt format).
+4. Do not output anything except the translated .srt content. No markdown wrappers.
+
+Here is the original SRT:
+${srt}
+`.trim();
+
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const ai = getNextAiClient();
+      console.log(`[Translation] Attempt ${attempt} to translate into ${language}`);
+      const aiResponse = await ai.models.generateContent({
+        model,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      });
+
+      let text = aiResponse.text || '';
+      // Remove markdown backticks if Gemini accidentally includes them
+      text = text.replace(/^```(srt)?\\n/, '').replace(/\\n```$/, '').trim();
+
+      return response.json({ translatedSrt: text });
+    } catch (error) {
+      lastError = error;
+      const msg = error.message || '';
+      const statusMatch = msg.match(/429|QUOTA|RESOURCE_EXHAUSTED/i);
+      console.error(`[Translation] Error:`, statusMatch ? 'Rate limit / Quota exceeded' : msg);
+
+      let delay = 1500;
+      const retryMatch = msg.match(/retry in ([\d.]+)s/i);
+
+      if (retryMatch && apiKeys.length === 1) {
+        delay = Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500;
+      }
+      if (attempt < MAX_RETRIES) await sleep(delay);
+    }
+  }
+  
+  console.error(`[Translation] All retries failed.`);
+  response.status(500).json({ error: lastError?.message || 'Translation failed' });
+});
+
 app.post('/api/burn', async (request, response) => {
   const { fileName, srt } = request.body;
   if (!fileName || !srt) return response.status(400).json({ error: 'Missing fileName or srt' });

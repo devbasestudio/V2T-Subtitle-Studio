@@ -537,6 +537,24 @@ textarea:focus {
   background: #964227 !important;
 }
 
+/* Translation Box */
+.translation-box {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #e8e6df;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+.translate-btn {
+  width: auto;
+  min-width: 140px;
+  margin-top: 12px;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+
 /* Download bar - the main download section */
 .download-bar {
   display: flex;

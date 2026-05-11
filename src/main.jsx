@@ -263,6 +263,7 @@ function App() {
   const [customLang, setCustomLang] = useState('');
   const [editorMode, setEditorMode] = useState('list'); // 'list' or 'raw'
   const [isBurning, setIsBurning] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
 
   const cueCount = useMemo(() => parseCueCount(srt), [srt]);
   const parsedCues = useMemo(() => parseSrtToCues(srt), [srt]);
@@ -284,15 +285,9 @@ function App() {
   const transcribe = async () => {
     if (!file || isProcessing) return;
 
-    const lang = subtitleLang === 'other' ? customLang.trim() : subtitleLang;
-    if (subtitleLang === 'other' && !customLang.trim()) {
-      setError('Please enter a custom language.');
-      return;
-    }
-
     const body = new FormData();
     body.append('media', file);
-    body.append('language', lang);
+    body.append('language', 'auto'); // Force original language initially
 
     setIsProcessing(true);
     setError('');
@@ -338,6 +333,40 @@ function App() {
       setStatus('Failed');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const translateSrt = async () => {
+    if (!srt) return;
+    const lang = subtitleLang === 'other' ? customLang.trim() : subtitleLang;
+    if (lang === 'auto') {
+      setError('Please select a target language to translate into.');
+      return;
+    }
+    if (subtitleLang === 'other' && !customLang.trim()) {
+      setError('Please enter a custom language.');
+      return;
+    }
+
+    setIsTranslating(true);
+    setStatus(`Translating subtitles into ${lang}…`);
+    try {
+      const response = await fetch(`${apiBase}/api/translate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ srt, language: lang })
+      });
+      const data = await response.json();
+      
+      if (!response.ok) throw new Error(data.error || 'Failed to translate');
+      
+      setSrt(data.translatedSrt);
+      setStatus('✅ Translation complete');
+    } catch (err) {
+      setError(err.message);
+      setStatus('Translation failed');
+    } finally {
+      setIsTranslating(false);
     }
   };
 
@@ -454,37 +483,6 @@ function App() {
               <span>{file ? file.name : 'Upload video or audio'}</span>
               <small>Maximum 1 hour • chunks are processed one minute at a time</small>
             </button>
-
-            {/* Language selector — shown after file is selected */}
-            {file && (
-              <div className="lang-selector">
-                <div className="lang-label">
-                  <Languages size={16} />
-                  <span>Subtitle language</span>
-                </div>
-                <div className="lang-options">
-                  {LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.code}
-                      className={`lang-chip${subtitleLang === lang.code ? ' active' : ''}`}
-                      onClick={() => setSubtitleLang(lang.code)}
-                    >
-                      {lang.label}
-                    </button>
-                  ))}
-                </div>
-                {subtitleLang === 'other' && (
-                  <input
-                    className="lang-custom-input"
-                    type="text"
-                    value={customLang}
-                    onChange={(e) => setCustomLang(e.target.value)}
-                    placeholder="e.g. Vietnamese, Arabic, German…"
-                    autoFocus
-                  />
-                )}
-              </div>
-            )}
 
             {/* Show raw preview only when no SRT yet */}
             {!srt && (
@@ -609,6 +607,46 @@ function App() {
                   <Download size={18} />
                   Download .srt
                 </button>
+              </div>
+            )}
+
+            {srt && (
+              <div className="translation-box">
+                <div className="lang-selector">
+                  <div className="lang-label">
+                    <Languages size={16} />
+                    <span>Translate subtitles to</span>
+                  </div>
+                  <div className="lang-options">
+                    {LANGUAGES.filter(l => l.code !== 'auto').map((lang) => (
+                      <button
+                        key={lang.code}
+                        className={`lang-chip${subtitleLang === lang.code ? ' active' : ''}`}
+                        onClick={() => setSubtitleLang(lang.code)}
+                      >
+                        {lang.label}
+                      </button>
+                    ))}
+                  </div>
+                  {subtitleLang === 'other' && (
+                    <input
+                      className="lang-custom-input"
+                      type="text"
+                      value={customLang}
+                      onChange={(e) => setCustomLang(e.target.value)}
+                      placeholder="e.g. Vietnamese, Arabic…"
+                      autoFocus
+                    />
+                  )}
+                  <button 
+                    className="primary-action translate-btn" 
+                    disabled={isTranslating || subtitleLang === 'auto'} 
+                    onClick={translateSrt}
+                  >
+                    {isTranslating ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />}
+                    {isTranslating ? 'Translating…' : 'Translate'}
+                  </button>
+                </div>
               </div>
             )}
 
