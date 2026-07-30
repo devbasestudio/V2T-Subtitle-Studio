@@ -78,7 +78,7 @@ const serializeCuesToSrt = (cues) =>
 const findActiveCue = (cues, time) => cues.find((cue) => time >= cue.start && time < cue.end);
 
 const subtitleFont = (fontSize) =>
-  `800 ${fontSize}px "Noto Sans Myanmar", "Myanmar Text", Padauk, system-ui, -apple-system, sans-serif`;
+  `800 ${fontSize}px "SamsungMyanmar", "Samsung Myanmar", "Noto Sans Myanmar", "Myanmar Text", Padauk, system-ui, -apple-system, sans-serif`;
 
 const wrapMeasuredLine = (ctx, rawLine, maxWidth) => {
   const tokens = rawLine.split(/(\s+)/).filter(Boolean);
@@ -495,6 +495,7 @@ function App() {
     let animationId;
 
     try {
+      await document.fonts?.load?.(subtitleFont(48));
       wakeLock = await navigator.wakeLock?.request?.('screen').catch(() => null);
       video.src = previewUrl;
       video.playsInline = true;
@@ -606,9 +607,9 @@ function App() {
     <main className="app-shell">
       <section className="workspace">
         <header className="topbar">
-          <div className="brand-mark">PDA</div>
+          <img className="brand-logo" src="/brand/pda-black.png" alt="PhyoDynamic Academy" />
           <div>
-            <p className="eyebrow">V2T Web</p>
+            <p className="eyebrow">PhyoDynamic Academy</p>
             <h1>Subtitle Burner</h1>
           </div>
           <button className="secondary-action top-action" type="button" onClick={resetProject}>
