@@ -1,377 +1,467 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Download,
-  FileAudio,
-  FileVideo,
-  Languages,
-  LoaderCircle,
-  Music2,
-  Upload,
-  Wand2,
-  CheckCircle2,
-  Copy,
+  AlertCircle,
   Check,
-  Play,
+  Copy,
+  Download,
+  FileText,
+  FileVideo,
+  Film,
+  LoaderCircle,
   Pause,
-  Film
+  Play,
+  Plus,
+  RotateCcw,
+  Trash2,
+  Upload
 } from 'lucide-react';
 import './styles.css';
 
-const apiBase = import.meta.env.VITE_API_BASE || '';
-
-const LANGUAGES = [
-  { code: 'auto', label: 'Auto-detect' },
-  { code: 'my', label: 'Myanmar (မြန်မာ)' },
-  { code: 'en', label: 'English' },
-  { code: 'ja', label: 'Japanese (日本語)' },
-  { code: 'ko', label: 'Korean (한국어)' },
-  { code: 'zh', label: 'Chinese (中文)' },
-  { code: 'th', label: 'Thai (ไทย)' },
-  { code: 'hi', label: 'Hindi (हिन्दी)' },
-  { code: 'es', label: 'Spanish (Español)' },
-  { code: 'fr', label: 'French (Français)' },
-  { code: 'other', label: 'Other…' }
-];
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const formatDuration = (seconds = 0) => {
-  const safe = Math.round(seconds);
-  const minutes = Math.floor(safe / 60);
+  const safe = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
   const rest = safe % 60;
-  return `${minutes}:${String(rest).padStart(2, '0')}`;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
+    : `${minutes}:${String(rest).padStart(2, '0')}`;
 };
 
-const formatBytes = (bytes = 0) => {
-  if (!bytes) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
+const formatSrtTime = (seconds = 0) => {
+  const safe = Math.max(0, seconds);
+  const totalMillis = Math.round(safe * 1000);
+  const hours = Math.floor(totalMillis / 3_600_000);
+  const minutes = Math.floor((totalMillis % 3_600_000) / 60_000);
+  const rest = Math.floor((totalMillis % 60_000) / 1000);
+  const millis = totalMillis % 1000;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')},${String(millis).padStart(3, '0')}`;
 };
 
-const parseCueCount = (srt) => {
-  const matches = srt.match(/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/g);
-  return matches?.length || 0;
+const parseSrtTime = (value = '') => {
+  const match = value.trim().match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
+  if (!match) return null;
+  const [, hours, minutes, seconds, millis] = match.map(Number);
+  return hours * 3600 + minutes * 60 + seconds + millis / 1000;
 };
 
-/* ─── SRT Parser ─── */
-const parseSrtTime = (timeStr) => {
-  const m = timeStr.trim().match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
-  if (!m) return 0;
-  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000;
+const parseSrtToCues = (srtText = '') => {
+  if (!srtText.trim()) return [];
+
+  return srtText
+    .replace(/\r/g, '')
+    .trim()
+    .split(/\n\n+/)
+    .map((block) => {
+      const lines = block.split('\n').filter(Boolean);
+      const timingIndex = lines.findIndex((line) => line.includes('-->'));
+      if (timingIndex === -1) return null;
+
+      const [startRaw, endRaw] = lines[timingIndex].split('-->').map((part) => part.trim());
+      const start = parseSrtTime(startRaw);
+      const end = parseSrtTime(endRaw);
+      const text = lines.slice(timingIndex + 1).join('\n').trim();
+
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+      return { start, end, text };
+    })
+    .filter(Boolean);
 };
 
-const parseSrtToCues = (srtText) => {
-  if (!srtText) return [];
-  const cleaned = srtText.replace(/\r/g, '').trim();
-  const blocks = cleaned.split(/\n\n+/);
-  const cues = [];
+const serializeCuesToSrt = (cues) =>
+  cues
+    .map((cue, index) => `${index + 1}\n${formatSrtTime(cue.start)} --> ${formatSrtTime(cue.end)}\n${cue.text}`)
+    .join('\n\n');
 
-  for (const block of blocks) {
-    const lines = block.split('\n').filter(Boolean);
-    const timingIdx = lines.findIndex((l) => l.includes('-->'));
-    if (timingIdx === -1) continue;
+const findActiveCue = (cues, time) => cues.find((cue) => time >= cue.start && time < cue.end);
 
-    const [startRaw, endRaw] = lines[timingIdx].split('-->').map((s) => s.trim());
-    const start = parseSrtTime(startRaw);
-    const end = parseSrtTime(endRaw);
-    const text = lines.slice(timingIdx + 1).join('\n').trim();
-    if (text) cues.push({ start, end, text });
+const subtitleFont = (fontSize) =>
+  `800 ${fontSize}px "Noto Sans Myanmar", "Myanmar Text", Padauk, system-ui, -apple-system, sans-serif`;
+
+const wrapMeasuredLine = (ctx, rawLine, maxWidth) => {
+  const tokens = rawLine.split(/(\s+)/).filter(Boolean);
+  const lines = [];
+  let current = '';
+
+  const pushCurrent = () => {
+    if (current.trim()) lines.push(current.trim());
+    current = '';
+  };
+
+  const splitLongToken = (token) => {
+    let piece = '';
+    for (const char of [...token]) {
+      const next = `${piece}${char}`;
+      if (piece && ctx.measureText(next).width > maxWidth) {
+        lines.push(piece);
+        piece = char;
+      } else {
+        piece = next;
+      }
+    }
+    return piece;
+  };
+
+  for (const token of tokens) {
+    if (/^\s+$/.test(token)) {
+      if (current && !current.endsWith(' ')) current += ' ';
+      continue;
+    }
+
+    if (ctx.measureText(token).width > maxWidth) {
+      pushCurrent();
+      current = splitLongToken(token);
+      continue;
+    }
+
+    const candidate = current ? `${current.trimEnd()} ${token}` : token;
+    if (current && ctx.measureText(candidate).width > maxWidth) {
+      pushCurrent();
+      current = token;
+    } else {
+      current = candidate;
+    }
   }
 
-  return cues;
+  pushCurrent();
+  return lines;
 };
 
-const formatSrtTimeFromSeconds = (seconds) => {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
-};
+const makeSubtitleLayout = (ctx, text, width, height) => {
+  const marginX = clamp(Math.round(width * 0.08), 32, 180);
+  const maxWidth = width - marginX * 2;
+  const minSide = Math.min(width, height);
+  let fontSize = clamp(Math.round(minSide * 0.061), 30, 78);
+  const minFontSize = clamp(Math.round(minSide * 0.038), 22, 42);
 
-const updateSrtCueText = (srtText, cueIndex, newText) => {
-  const blocks = srtText.replace(/\r/g, '').trim().split(/\n\n+/);
-  if (!blocks[cueIndex]) return srtText;
-  
-  const lines = blocks[cueIndex].split('\n');
-  const timingIdx = lines.findIndex((l) => l.includes('-->'));
-  if (timingIdx === -1) return srtText;
-  
-  // Keep index and timing lines, replace everything after with the new text
-  const newBlock = [...lines.slice(0, timingIdx + 1), newText].join('\n');
-  blocks[cueIndex] = newBlock;
-  return blocks.join('\n\n');
-};
+  while (fontSize >= minFontSize) {
+    ctx.font = subtitleFont(fontSize);
+    const lines = text
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+      .filter(Boolean)
+      .flatMap((line) => wrapMeasuredLine(ctx, line, maxWidth));
+    const lineHeight = Math.round(fontSize * 1.28);
+    const blockHeight = lines.length * lineHeight;
 
-const updateSrtCueTiming = (srtText, cueIndex, newStart, newEnd) => {
-  const blocks = srtText.replace(/\r/g, '').trim().split(/\n\n+/);
-  if (!blocks[cueIndex]) return srtText;
-  
-  const lines = blocks[cueIndex].split('\n');
-  const timingIdx = lines.findIndex((l) => l.includes('-->'));
-  if (timingIdx === -1) return srtText;
-  
-  // Update timing line
-  lines[timingIdx] = `${formatSrtTimeFromSeconds(newStart)} --> ${formatSrtTimeFromSeconds(newEnd)}`;
-  blocks[cueIndex] = lines.join('\n');
-  return blocks.join('\n\n');
-};
-
-/* ─── Subtitle Preview Component ─── */
-function SubtitlePreview({ previewUrl, mediaKind, srt }) {
-  const mediaRef = useRef(null);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [duration, setDuration] = useState(0);
-  const animRef = useRef(null);
-
-  const cues = useMemo(() => parseSrtToCues(srt), [srt]);
-
-  const activeCue = useMemo(() => {
-    for (const cue of cues) {
-      if (currentTime >= cue.start && currentTime < cue.end) return cue;
+    if (blockHeight <= height * 0.34 || fontSize <= minFontSize) {
+      return {
+        lines,
+        fontSize,
+        lineHeight,
+        maxWidth,
+        bottom: clamp(Math.round(height * 0.095), 42, 130),
+        outline: clamp(Math.round(fontSize * 0.085), 3, 8),
+        shadow: clamp(Math.round(fontSize * 0.035), 1, 4)
+      };
     }
-    return null;
-  }, [cues, currentTime]);
 
-  /* Use requestAnimationFrame for smoother subtitle sync */
-  const tick = useCallback(() => {
-    if (mediaRef.current) {
-      setCurrentTime(mediaRef.current.currentTime);
-    }
-    animRef.current = requestAnimationFrame(tick);
-  }, []);
+    fontSize -= 2;
+  }
 
-  useEffect(() => {
-    animRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animRef.current);
-  }, [tick]);
-
-  const handlePlay = () => setIsPlaying(true);
-  const handlePause = () => setIsPlaying(false);
-  const handleLoadedMetadata = () => {
-    if (mediaRef.current) setDuration(mediaRef.current.duration);
+  return {
+    lines: [text],
+    fontSize: minFontSize,
+    lineHeight: Math.round(minFontSize * 1.28),
+    maxWidth,
+    bottom: clamp(Math.round(height * 0.095), 42, 130),
+    outline: 4,
+    shadow: 2
   };
+};
+
+const drawSubtitle = (ctx, cue, width, height) => {
+  if (!cue?.text) return;
+
+  const layout = makeSubtitleLayout(ctx, cue.text, width, height);
+  const blockHeight = layout.lines.length * layout.lineHeight;
+  let y = height - layout.bottom - blockHeight + layout.lineHeight * 0.82;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = subtitleFont(layout.fontSize);
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  ctx.lineWidth = layout.outline;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+  ctx.shadowBlur = layout.shadow;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = layout.shadow;
+
+  for (const line of layout.lines) {
+    ctx.strokeText(line, width / 2, y, layout.maxWidth);
+    ctx.fillText(line, width / 2, y, layout.maxWidth);
+    y += layout.lineHeight;
+  }
+
+  ctx.restore();
+};
+
+const chooseRecorderMimeType = () => {
+  if (!window.MediaRecorder) return '';
+  const candidates = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+};
+
+const extensionForType = (type = '') => (type.includes('mp4') ? 'mp4' : 'webm');
+
+const waitForVideoMetadata = (video) =>
+  new Promise((resolve, reject) => {
+    if (video.readyState >= 1) {
+      resolve();
+      return;
+    }
+    video.onloadedmetadata = resolve;
+    video.onerror = () => reject(new Error('Could not load the selected video.'));
+  });
+
+function SubtitlePreview({ previewUrl, cues, mediaRef, currentTime, duration, setDuration, setCurrentTime }) {
+  const [ratio, setRatio] = useState('16 / 9');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const activeCue = useMemo(() => findActiveCue(cues, currentTime), [cues, currentTime]);
 
   const togglePlay = () => {
     if (!mediaRef.current) return;
-    if (mediaRef.current.paused) {
-      mediaRef.current.play();
-    } else {
-      mediaRef.current.pause();
-    }
+    if (mediaRef.current.paused) mediaRef.current.play();
+    else mediaRef.current.pause();
   };
 
-  const handleSeek = (e) => {
-    if (!mediaRef.current || !duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const fraction = Math.max(0, Math.min(1, x / rect.width));
-    mediaRef.current.currentTime = fraction * duration;
+  const seek = (event) => {
+    if (!mediaRef.current) return;
+    const nextTime = Number(event.target.value);
+    mediaRef.current.currentTime = nextTime;
+    setCurrentTime(nextTime);
   };
 
-  const progress = duration ? (currentTime / duration) * 100 : 0;
-
-  if (mediaKind === 'video') {
-    return (
-      <div className="subtitle-preview">
-        <div className="subtitle-viewport video-viewport" onClick={togglePlay}>
+  return (
+    <div className="preview-tool">
+      <div className="video-stage" style={{ aspectRatio: ratio }} onClick={togglePlay}>
+        {previewUrl ? (
           <video
             ref={mediaRef}
             src={previewUrl}
-            onPlay={handlePlay}
-            onPause={handlePause}
-            onLoadedMetadata={handleLoadedMetadata}
             playsInline
+            onLoadedMetadata={() => {
+              const media = mediaRef.current;
+              setDuration(media?.duration || 0);
+              if (media?.videoWidth && media?.videoHeight) {
+                setRatio(`${media.videoWidth} / ${media.videoHeight}`);
+              }
+            }}
+            onTimeUpdate={() => setCurrentTime(mediaRef.current?.currentTime || 0)}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
           />
-          {activeCue && (
-            <div className="subtitle-overlay">
-              <span className="subtitle-text">{activeCue.text}</span>
-            </div>
-          )}
-          {!isPlaying && (
-            <div className="play-overlay">
-              <Play size={48} fill="white" />
-            </div>
-          )}
-        </div>
-        <div className="subtitle-controls">
-          <button className="ctrl-btn" onClick={togglePlay}>
-            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-          </button>
-          <div className="seek-bar" onClick={handleSeek}>
-            <div className="seek-fill" style={{ width: `${progress}%` }} />
-          </div>
-          <span className="ctrl-time">{formatDuration(currentTime)} / {formatDuration(duration)}</span>
-        </div>
-      </div>
-    );
-  }
-
-  /* Audio: black canvas with white text */
-  return (
-    <div className="subtitle-preview">
-      <div className="subtitle-viewport audio-viewport" onClick={togglePlay}>
-        <audio
-          ref={mediaRef}
-          src={previewUrl}
-          onPlay={handlePlay}
-          onPause={handlePause}
-          onLoadedMetadata={handleLoadedMetadata}
-        />
-        <div className="audio-sub-canvas">
-          {activeCue ? (
-            <span className="audio-sub-text">{activeCue.text}</span>
-          ) : (
-            <span className="audio-sub-text dimmed">
-              {isPlaying ? '♪ ♪ ♪' : 'Press play to preview subtitles'}
-            </span>
-          )}
-        </div>
-        {!isPlaying && (
-          <div className="play-overlay dark">
-            <Play size={48} fill="white" />
+        ) : (
+          <div className="empty-video">
+            <FileVideo size={36} />
           </div>
         )}
+        {activeCue && <span className="preview-subtitle">{activeCue.text}</span>}
+        {previewUrl && !isPlaying && (
+          <button className="play-button" type="button" aria-label="Play preview">
+            <Play size={34} fill="currentColor" />
+          </button>
+        )}
       </div>
-      <div className="subtitle-controls">
-        <button className="ctrl-btn" onClick={togglePlay}>
-          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+
+      <div className="playback-row">
+        <button className="icon-button" type="button" onClick={togglePlay} disabled={!previewUrl} aria-label={isPlaying ? 'Pause' : 'Play'}>
+          {isPlaying ? <Pause size={18} /> : <Play size={18} />}
         </button>
-        <div className="seek-bar" onClick={handleSeek}>
-          <div className="seek-fill" style={{ width: `${progress}%` }} />
-        </div>
-        <span className="ctrl-time">{formatDuration(currentTime)} / {formatDuration(duration)}</span>
+        <input
+          className="seek-bar"
+          type="range"
+          min="0"
+          max={duration || 0}
+          step="0.01"
+          value={Math.min(currentTime, duration || 0)}
+          onChange={seek}
+          onInput={seek}
+          disabled={!duration}
+          aria-label="Preview timeline"
+          style={{ '--seek-progress': `${duration ? (currentTime / duration) * 100 : 0}%` }}
+        />
+        <span className="time-readout">{formatDuration(currentTime)} / {formatDuration(duration)}</span>
       </div>
     </div>
   );
 }
 
-/* ─── Main App ─── */
+function CueRow({ cue, index, onChange, onDelete, onPlay, active }) {
+  const [text, setText] = useState(cue.text);
+  const [start, setStart] = useState(formatSrtTime(cue.start));
+  const [end, setEnd] = useState(formatSrtTime(cue.end));
+
+  useEffect(() => setText(cue.text), [cue.text]);
+  useEffect(() => setStart(formatSrtTime(cue.start)), [cue.start]);
+  useEffect(() => setEnd(formatSrtTime(cue.end)), [cue.end]);
+
+  const updateTime = (field, value, setter) => {
+    const parsed = parseSrtTime(value);
+    if (parsed === null) {
+      setter(formatSrtTime(cue[field]));
+      return;
+    }
+    onChange(index, field, parsed);
+  };
+
+  return (
+    <article className={`cue-row ${active ? 'active' : ''}`}>
+      <div className="cue-time-row">
+        <button className="icon-button small" type="button" onClick={() => onPlay(cue.start)} aria-label="Play cue">
+          <Play size={14} />
+        </button>
+        <input value={start} onChange={(event) => setStart(event.target.value)} onBlur={() => updateTime('start', start, setStart)} />
+        <span>to</span>
+        <input value={end} onChange={(event) => setEnd(event.target.value)} onBlur={() => updateTime('end', end, setEnd)} />
+        <button className="icon-button small danger" type="button" onClick={() => onDelete(index)} aria-label="Delete cue">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      <textarea
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => onChange(index, 'text', text)}
+        spellCheck="false"
+      />
+    </article>
+  );
+}
+
 function App() {
-  const fileInputRef = useRef(null);
-  const [mode, setMode] = useState('video');
-  const [file, setFile] = useState(null);
+  const videoInputRef = useRef(null);
+  const srtInputRef = useRef(null);
+  const previewMediaRef = useRef(null);
+  const previewUrlRef = useRef('');
+  const outputUrlRef = useRef('');
+
+  const [videoFile, setVideoFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
-  const [status, setStatus] = useState('Ready');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState(null);
   const [srt, setSrt] = useState('');
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [status, setStatus] = useState('Ready');
   const [error, setError] = useState('');
-  const [copied, setCopied] = useState(false);
-  const [subtitleLang, setSubtitleLang] = useState('auto');
-  const [customLang, setCustomLang] = useState('');
-  const [editorMode, setEditorMode] = useState('list'); // 'list' or 'raw'
   const [isBurning, setIsBurning] = useState(false);
-  const [isTranslating, setIsTranslating] = useState(false);
+  const [burnProgress, setBurnProgress] = useState(0);
+  const [output, setOutput] = useState(null);
+  const [copied, setCopied] = useState(false);
 
-  const cueCount = useMemo(() => parseCueCount(srt), [srt]);
-  const parsedCues = useMemo(() => parseSrtToCues(srt), [srt]);
-  const mediaKind = file?.type?.startsWith('video/') ? 'video' : 'audio';
-  const baseName = (file?.name || 'subtitle').replace(/\.[^.]+$/, '');
+  const cues = useMemo(() => parseSrtToCues(srt), [srt]);
+  const activeCueIndex = useMemo(
+    () => cues.findIndex((cue) => currentTime >= cue.start && currentTime < cue.end),
+    [cues, currentTime]
+  );
+  const baseName = (videoFile?.name || 'pda-v2t-video').replace(/\.[^.]+$/, '');
+  const canBurn = Boolean(videoFile && previewUrl && cues.length && !isBurning);
 
-  const selectFile = (selectedFile) => {
-    if (!selectedFile) return;
-    setFile(selectedFile);
-    setResult(null);
-    setSrt('');
-    setError('');
-    setStatus(`${selectedFile.name} selected`);
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPreviewUrl(URL.createObjectURL(selectedFile));
-    setMode(selectedFile.type.startsWith('audio/') ? 'audio' : 'video');
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+      if (outputUrlRef.current) URL.revokeObjectURL(outputUrlRef.current);
+    };
+  }, []);
+
+  const setNewPreviewUrl = (file) => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    const nextUrl = URL.createObjectURL(file);
+    previewUrlRef.current = nextUrl;
+    setPreviewUrl(nextUrl);
   };
 
-  const transcribe = async () => {
-    if (!file || isProcessing) return;
+  const setNewOutput = (blob, type) => {
+    if (outputUrlRef.current) URL.revokeObjectURL(outputUrlRef.current);
+    const url = URL.createObjectURL(blob);
+    outputUrlRef.current = url;
+    const ext = extensionForType(type || blob.type);
+    setOutput({ url, blob, type: type || blob.type, fileName: `${baseName}_subtitled.${ext}` });
+  };
 
-    const body = new FormData();
-    body.append('media', file);
-    body.append('language', 'auto'); // Force original language initially
-
-    setIsProcessing(true);
+  const selectVideo = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('video/')) {
+      setError('Please choose a video file.');
+      return;
+    }
+    setVideoFile(file);
+    setNewPreviewUrl(file);
+    setOutput(null);
     setError('');
-    setSrt('');
-    setResult(null);
-    setStatus('Uploading media…');
+    setStatus(`${file.name} selected`);
+    setCurrentTime(0);
+    setDuration(0);
+  };
 
+  const importSrt = async (file) => {
+    if (!file) return;
     try {
-      const timers = [];
-      if (mediaKind === 'video') {
-        timers.push(setTimeout(() => setStatus('Extracting audio from video…'), 1500));
-        timers.push(setTimeout(() => setStatus('Optimizing & splitting into 1-min chunks…'), 4000));
-        timers.push(setTimeout(() => setStatus('Sending chunks to Gemini for transcription…'), 8000));
-        timers.push(setTimeout(() => setStatus('Transcribing… this may take a minute'), 15000));
-        timers.push(setTimeout(() => setStatus('Still processing — please wait…'), 30000));
-        timers.push(setTimeout(() => setStatus('Almost there…'), 60000));
-      } else {
-        timers.push(setTimeout(() => setStatus('Optimizing & splitting audio…'), 1500));
-        timers.push(setTimeout(() => setStatus('Sending chunks to Gemini…'), 4000));
-        timers.push(setTimeout(() => setStatus('Transcribing… this may take a minute'), 12000));
-        timers.push(setTimeout(() => setStatus('Still processing — please wait…'), 30000));
-        timers.push(setTimeout(() => setStatus('Almost there…'), 60000));
-      }
-
-      const response = await fetch(`${apiBase}/api/transcribe`, {
-        method: 'POST',
-        body
-      });
-
-      timers.forEach(clearTimeout);
-
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload.error || 'Transcription failed');
-      }
-
-      setResult(payload);
-      setSrt(payload.srt || '');
-      setStatus(`✅ Done — ${parseCueCount(payload.srt || '')} subtitle cues generated`);
-    } catch (transcribeError) {
-      setError(transcribeError.message);
-      setStatus('Failed');
-    } finally {
-      setIsProcessing(false);
+      const text = await file.text();
+      setSrt(text.trim());
+      setOutput(null);
+      setError('');
+      setStatus(`${file.name} loaded`);
+    } catch {
+      setError('Could not read the SRT file.');
     }
   };
 
-  const translateSrt = async () => {
-    if (!srt) return;
-    const lang = subtitleLang === 'other' ? customLang.trim() : subtitleLang;
-    if (lang === 'auto') {
-      setError('Please select a target language to translate into.');
-      return;
+  const updateCue = (index, field, value) => {
+    const nextCues = [...cues];
+    nextCues[index] = { ...nextCues[index], [field]: value };
+
+    if (field === 'start' && nextCues[index].end <= value) {
+      nextCues[index].end = value + 2;
     }
-    if (subtitleLang === 'other' && !customLang.trim()) {
-      setError('Please enter a custom language.');
-      return;
+    if (field === 'end' && nextCues[index].start >= value) {
+      nextCues[index].start = Math.max(0, value - 2);
     }
 
-    setIsTranslating(true);
-    setStatus(`Translating subtitles into ${lang}…`);
+    setSrt(serializeCuesToSrt(nextCues.sort((a, b) => a.start - b.start)));
+    setOutput(null);
+  };
+
+  const deleteCue = (index) => {
+    setSrt(serializeCuesToSrt(cues.filter((_, cueIndex) => cueIndex !== index)));
+    setOutput(null);
+  };
+
+  const addCue = () => {
+    const start = previewMediaRef.current?.currentTime || cues[cues.length - 1]?.end || 0;
+    const nextCue = { start, end: start + 3, text: 'New subtitle' };
+    setSrt(serializeCuesToSrt([...cues, nextCue].sort((a, b) => a.start - b.start)));
+    setOutput(null);
+  };
+
+  const playCue = (time) => {
+    if (!previewMediaRef.current) return;
+    previewMediaRef.current.currentTime = time;
+    previewMediaRef.current.play();
+  };
+
+  const copySrt = async () => {
     try {
-      const response = await fetch(`${apiBase}/api/translate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ srt, language: lang })
-      });
-      const data = await response.json();
-      
-      if (!response.ok) throw new Error(data.error || 'Failed to translate');
-      
-      setSrt(data.translatedSrt);
-      setStatus('✅ Translation complete');
-    } catch (err) {
-      setError(err.message);
-      setStatus('Translation failed');
-    } finally {
-      setIsTranslating(false);
+      await navigator.clipboard.writeText(srt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError('Clipboard access was blocked.');
     }
   };
 
   const downloadSrt = () => {
-    if (!srt) return;
     const blob = new Blob([srt], { type: 'application/x-subrip;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -383,281 +473,317 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const copySrt = async () => {
-    if (!srt) return;
-    try {
-      await navigator.clipboard.writeText(srt);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard might be blocked */ }
-  };
+  const burnOnDevice = async () => {
+    if (!canBurn) return;
+    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
+      setError('This browser cannot export burned video. Please use Safari 17+, Chrome, or Edge.');
+      return;
+    }
 
-  const burnSubtitles = async () => {
-    if (!result?.mediaUrl || !srt || mediaKind !== 'video') return;
     setIsBurning(true);
-    setStatus('Burning subtitles into video (this may take a few minutes depending on length)…');
-    
+    setBurnProgress(0);
+    setOutput(null);
+    setError('');
+    setStatus('Preparing export');
+
+    const video = document.createElement('video');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    let recorder;
+    let audioContext;
+    let wakeLock;
+    let animationId;
+
     try {
-      // Extract the actual saved filename from mediaUrl (e.g. /media/1234.mp4 -> 1234.mp4)
-      const actualFileName = result.mediaUrl.replace('/media/', '');
-      const response = await fetch(`${apiBase}/api/burn`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: actualFileName, srt })
-      });
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to burn subtitles');
+      wakeLock = await navigator.wakeLock?.request?.('screen').catch(() => null);
+      video.src = previewUrl;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.muted = false;
+
+      await waitForVideoMetadata(video);
+
+      const width = video.videoWidth || 1280;
+      const height = video.videoHeight || 720;
+      canvas.width = width;
+      canvas.height = height;
+
+      const frameRate = width * height > 2_100_000 ? 24 : 30;
+      const canvasStream = canvas.captureStream(frameRate);
+      const tracks = [...canvasStream.getVideoTracks()];
+
+      try {
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtor) {
+          audioContext = new AudioCtor();
+          await audioContext.resume();
+          const source = audioContext.createMediaElementSource(video);
+          const destination = audioContext.createMediaStreamDestination();
+          source.connect(destination);
+          tracks.push(...destination.stream.getAudioTracks());
+        }
+      } catch {
+        setStatus('Exporting video without captured audio');
       }
-      
-      setStatus('✅ Video rendered with subtitles! Downloading...');
-      
-      // Auto-download the burned video
-      const link = document.createElement('a');
-      link.href = `${apiBase}${data.burnedUrl}`;
-      link.download = `${baseName}_hardsubbed.mp4`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (err) {
-      setError(err.message);
-      setStatus('Burn failed');
+
+      const stream = new MediaStream(tracks);
+      const mimeType = chooseRecorderMimeType();
+      const chunks = [];
+      const recorderOptions = mimeType
+        ? { mimeType, videoBitsPerSecond: Math.max(4_000_000, Math.round(width * height * 2.6)) }
+        : { videoBitsPerSecond: Math.max(4_000_000, Math.round(width * height * 2.6)) };
+
+      try {
+        recorder = new MediaRecorder(stream, recorderOptions);
+      } catch {
+        recorder = new MediaRecorder(stream);
+      }
+
+      const stopped = new Promise((resolve, reject) => {
+        recorder.ondataavailable = (event) => {
+          if (event.data?.size) chunks.push(event.data);
+        };
+        recorder.onerror = () => reject(new Error('Video export failed while recording.'));
+        recorder.onstop = resolve;
+      });
+
+      const renderFrame = () => {
+        ctx.drawImage(video, 0, 0, width, height);
+        drawSubtitle(ctx, findActiveCue(cues, video.currentTime), width, height);
+        setBurnProgress(duration ? clamp((video.currentTime / duration) * 100, 0, 99) : 0);
+        if (!video.ended && !video.paused) animationId = requestAnimationFrame(renderFrame);
+      };
+
+      recorder.start(1000);
+      setStatus('Burning subtitles on this device');
+      await video.play();
+      renderFrame();
+
+      await new Promise((resolve) => {
+        video.onended = resolve;
+      });
+
+      ctx.drawImage(video, 0, 0, width, height);
+      recorder.stop();
+      await stopped;
+
+      tracks.forEach((track) => track.stop());
+      const type = recorder.mimeType || mimeType || 'video/webm';
+      setNewOutput(new Blob(chunks, { type }), type);
+      setBurnProgress(100);
+      setStatus('Export ready');
+    } catch (burnError) {
+      setError(burnError.message || 'Could not burn subtitles on this device.');
+      setStatus('Export failed');
     } finally {
+      if (animationId) cancelAnimationFrame(animationId);
+      if (recorder?.state === 'recording') recorder.stop();
+      await audioContext?.close?.().catch(() => {});
+      await wakeLock?.release?.().catch(() => {});
+      video.removeAttribute('src');
+      video.load();
       setIsBurning(false);
     }
+  };
+
+  const resetProject = () => {
+    setVideoFile(null);
+    setSrt('');
+    setDuration(0);
+    setCurrentTime(0);
+    setStatus('Ready');
+    setError('');
+    setOutput(null);
+    setBurnProgress(0);
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = '';
+    setPreviewUrl('');
+    if (outputUrlRef.current) URL.revokeObjectURL(outputUrlRef.current);
+    outputUrlRef.current = '';
   };
 
   return (
     <main className="app-shell">
       <section className="workspace">
-        <div className="topbar">
+        <header className="topbar">
+          <div className="brand-mark">PDA</div>
           <div>
-            <p className="eyebrow">V2T Subtitle Studio</p>
-            <h1>Video / Audio to editable SRT</h1>
+            <p className="eyebrow">V2T Web</p>
+            <h1>Subtitle Burner</h1>
           </div>
-          <div className="mode-switch" aria-label="Upload type">
-            <button className={mode === 'video' ? 'active' : ''} onClick={() => setMode('video')}>
-              <FileVideo size={18} />
-              Video
-            </button>
-            <button className={mode === 'audio' ? 'active' : ''} onClick={() => setMode('audio')}>
-              <FileAudio size={18} />
-              Audio
-            </button>
-          </div>
-        </div>
+          <button className="secondary-action top-action" type="button" onClick={resetProject}>
+            <RotateCcw size={17} />
+            New
+          </button>
+        </header>
 
-        {/* ─── Subtitle Preview (shown when SRT is ready) ─── */}
-        {srt && previewUrl && (
+        <section className="tool-grid">
+          <div className="left-column">
+            <section className="panel source-panel">
+              <div className="section-head">
+                <span className="step-pill">1</span>
+                <div>
+                  <p className="eyebrow">Source</p>
+                  <h2>Video</h2>
+                </div>
+              </div>
+
+              <input
+                ref={videoInputRef}
+                type="file"
+                accept="video/*"
+                hidden
+                onChange={(event) => selectVideo(event.target.files?.[0])}
+              />
+
+              <button
+                className="dropzone"
+                type="button"
+                onClick={() => videoInputRef.current?.click()}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  selectVideo(event.dataTransfer.files?.[0]);
+                }}
+              >
+                <Upload size={28} />
+                <strong>{videoFile ? videoFile.name : 'Choose video'}</strong>
+                <span>{videoFile ? `${formatDuration(duration)} selected` : 'MP4, MOV, WebM'}</span>
+              </button>
+            </section>
+
+            <section className="panel srt-panel">
+              <div className="section-head">
+                <span className="step-pill">2</span>
+                <div>
+                  <p className="eyebrow">Subtitles</p>
+                  <h2>SRT input</h2>
+                </div>
+              </div>
+
+              <input
+                ref={srtInputRef}
+                type="file"
+                accept=".srt,.txt,text/plain,application/x-subrip"
+                hidden
+                onChange={(event) => importSrt(event.target.files?.[0])}
+              />
+
+              <div className="srt-actions">
+                <button className="secondary-action" type="button" onClick={() => srtInputRef.current?.click()}>
+                  <FileText size={17} />
+                  Import
+                </button>
+                <button className="icon-button" type="button" onClick={copySrt} disabled={!srt} aria-label="Copy SRT">
+                  {copied ? <Check size={18} /> : <Copy size={18} />}
+                </button>
+                <button className="icon-button" type="button" onClick={downloadSrt} disabled={!srt} aria-label="Download SRT">
+                  <Download size={18} />
+                </button>
+              </div>
+
+              <textarea
+                className="srt-input"
+                value={srt}
+                onChange={(event) => {
+                  setSrt(event.target.value);
+                  setOutput(null);
+                  setError('');
+                  setStatus(event.target.value.trim() ? 'SRT ready' : 'Ready');
+                }}
+                spellCheck="false"
+                placeholder={`1\n00:00:00,000 --> 00:00:03,000\nPaste subtitle text here`}
+              />
+
+              <div className="cue-summary">
+                <span>{cues.length} cues</span>
+                <button className="text-button" type="button" onClick={addCue}>
+                  <Plus size={15} />
+                  Add cue
+                </button>
+              </div>
+            </section>
+          </div>
+
           <section className="panel preview-panel">
-            <div className="preview-panel-head">
+            <div className="section-head">
+              <span className="step-pill">3</span>
               <div>
-                <p className="eyebrow">Subtitle Preview</p>
-                <h2>Live playback with subtitles</h2>
+                <p className="eyebrow">Preview</p>
+                <h2>Check frame</h2>
               </div>
             </div>
-            <SubtitlePreview previewUrl={previewUrl} mediaKind={mediaKind} srt={srt} />
-          </section>
-        )}
 
-        <div className="main-grid">
-          <section className="panel upload-panel">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={mode === 'video' ? 'video/*,audio/*' : 'audio/*,video/*'}
-              onChange={(event) => selectFile(event.target.files?.[0])}
-              hidden
+            <SubtitlePreview
+              previewUrl={previewUrl}
+              cues={cues}
+              mediaRef={previewMediaRef}
+              currentTime={currentTime}
+              duration={duration}
+              setDuration={setDuration}
+              setCurrentTime={setCurrentTime}
             />
-            <button
-              className="dropzone"
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                selectFile(event.dataTransfer.files?.[0]);
-              }}
-            >
-              <Upload size={34} />
-              <span>{file ? file.name : 'Upload video or audio'}</span>
-              <small>Maximum 1 hour • chunks are processed one minute at a time</small>
-            </button>
 
-            {/* Show raw preview only when no SRT yet */}
-            {!srt && (
-              <div className="preview-frame">
-                {previewUrl ? (
-                  mediaKind === 'video' ? (
-                    <video src={previewUrl} controls />
-                  ) : (
-                    <div className="audio-preview">
-                      <Music2 size={46} />
-                      <audio src={previewUrl} controls />
-                    </div>
-                  )
-                ) : (
-                  <div className="empty-preview">
-                    <Wand2 size={40} />
-                    <span>No media selected</span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <button className="primary-action" disabled={!file || isProcessing} onClick={transcribe}>
-              {isProcessing ? <LoaderCircle className="spin" size={19} /> : <Wand2 size={19} />}
-              {isProcessing ? 'Processing…' : 'Generate SRT'}
-            </button>
-
-            <div className="status-row">
-              <span className={isProcessing ? 'pulse-dot' : 'solid-dot'} />
+            <div className="status-strip">
+              <span className={isBurning ? 'pulse-dot' : 'solid-dot'} />
               <strong>{status}</strong>
             </div>
-            {error && <p className="error-text">{error}</p>}
-          </section>
 
-          <section className="panel editor-panel">
-            <div className="editor-head">
+            {isBurning && (
+              <div className="progress-wrap" aria-label="Export progress">
+                <span style={{ width: `${burnProgress}%` }} />
+              </div>
+            )}
+
+            {error && (
+              <div className="error-box">
+                <AlertCircle size={18} />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <button className="primary-action burn-action" type="button" disabled={!canBurn} onClick={burnOnDevice}>
+              {isBurning ? <LoaderCircle className="spin" size={19} /> : <Film size={19} />}
+              {isBurning ? `${Math.floor(burnProgress)}%` : 'Burn Video'}
+            </button>
+
+            {output && (
+              <div className="export-box">
+                <video src={output.url} controls playsInline />
+                <a className="download-action" href={output.url} download={output.fileName}>
+                  <Download size={17} />
+                  Download {output.type.includes('mp4') ? 'MP4' : 'Video'}
+                </a>
+              </div>
+            )}
+          </section>
+        </section>
+
+        {cues.length > 0 && (
+          <section className="panel cue-editor">
+            <div className="section-head">
+              <span className="step-pill">4</span>
               <div>
-                <p className="eyebrow">Live editor</p>
-                <h2>{cueCount} subtitle cues</h2>
-                {srt && (
-                  <div className="editor-tabs">
-                    <button className={editorMode === 'list' ? 'active' : ''} onClick={() => setEditorMode('list')}>Visual List</button>
-                    <button className={editorMode === 'raw' ? 'active' : ''} onClick={() => setEditorMode('raw')}>Raw SRT</button>
-                  </div>
-                )}
-              </div>
-              <div className="editor-actions">
-                {mediaKind === 'video' && srt && (
-                  <button className="icon-button burn-button" disabled={isBurning} onClick={burnSubtitles} title="Hardsub & Download Video">
-                    {isBurning ? <LoaderCircle className="spin" size={20} /> : <Film size={20} />}
-                  </button>
-                )}
-                <button className="icon-button" disabled={!srt} onClick={copySrt} title="Copy to clipboard">
-                  {copied ? <Check size={20} /> : <Copy size={20} />}
-                </button>
-                <button className="icon-button" disabled={!srt} onClick={downloadSrt} title="Download .srt">
-                  <Download size={20} />
-                </button>
+                <p className="eyebrow">Timing</p>
+                <h2>Edit cues</h2>
               </div>
             </div>
 
-            {srt ? (
-              editorMode === 'raw' ? (
-                <textarea
-                  value={srt}
-                  onChange={(event) => setSrt(event.target.value)}
-                  spellCheck="false"
-                  placeholder="Generated .srt content will appear here for live editing."
+            <div className="cue-list">
+              {cues.map((cue, index) => (
+                <CueRow
+                  key={`${cue.start}-${cue.end}-${index}`}
+                  cue={cue}
+                  index={index}
+                  active={index === activeCueIndex}
+                  onChange={updateCue}
+                  onDelete={deleteCue}
+                  onPlay={playCue}
                 />
-              ) : (
-                <div className="cue-list-editor">
-                  {parsedCues.map((cue, index) => (
-                    <div key={index} className="cue-row">
-                      <div className="cue-time">
-                        <span className="cue-index">{index + 1}</span>
-                        <div className="cue-timing-controls">
-                          <input 
-                            type="number" 
-                            step="0.1" 
-                            value={Number(cue.start).toFixed(1)} 
-                            onChange={(e) => setSrt(updateSrtCueTiming(srt, index, parseFloat(e.target.value) || 0, cue.end))} 
-                            title="Start time (seconds)"
-                          />
-                          <span>→</span>
-                          <input 
-                            type="number" 
-                            step="0.1" 
-                            value={Number(cue.end).toFixed(1)} 
-                            onChange={(e) => setSrt(updateSrtCueTiming(srt, index, cue.start, parseFloat(e.target.value) || 0))} 
-                            title="End time (seconds)"
-                          />
-                        </div>
-                      </div>
-                      <textarea
-                        className="cue-input"
-                        value={cue.text}
-                        onChange={(e) => setSrt(updateSrtCueText(srt, index, e.target.value))}
-                        rows={cue.text.split('\n').length || 1}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )
-            ) : (
-              <textarea
-                value=""
-                readOnly
-                placeholder="Generated .srt content will appear here for live editing."
-              />
-            )}
-
-            {srt && (
-              <div className="download-bar">
-                <div className="download-info">
-                  <CheckCircle2 size={22} className="download-check-icon" />
-                  <div>
-                    <strong>{baseName}.srt</strong>
-                    <small>{cueCount} cues • {srt.length.toLocaleString()} characters</small>
-                  </div>
-                </div>
-                <button className="download-action" onClick={downloadSrt}>
-                  <Download size={18} />
-                  Download .srt
-                </button>
-              </div>
-            )}
-
-            {srt && (
-              <div className="translation-box">
-                <div className="lang-selector">
-                  <div className="lang-label">
-                    <Languages size={16} />
-                    <span>Translate subtitles to</span>
-                  </div>
-                  <div className="lang-options">
-                    {LANGUAGES.filter(l => l.code !== 'auto').map((lang) => (
-                      <button
-                        key={lang.code}
-                        className={`lang-chip${subtitleLang === lang.code ? ' active' : ''}`}
-                        onClick={() => setSubtitleLang(lang.code)}
-                      >
-                        {lang.label}
-                      </button>
-                    ))}
-                  </div>
-                  {subtitleLang === 'other' && (
-                    <input
-                      className="lang-custom-input"
-                      type="text"
-                      value={customLang}
-                      onChange={(e) => setCustomLang(e.target.value)}
-                      placeholder="e.g. Vietnamese, Arabic…"
-                      autoFocus
-                    />
-                  )}
-                  <button 
-                    className="primary-action translate-btn" 
-                    disabled={isTranslating || subtitleLang === 'auto'} 
-                    onClick={translateSrt}
-                  >
-                    {isTranslating ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />}
-                    {isTranslating ? 'Translating…' : 'Translate'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="metrics">
-              <span>Model: {result?.model || '—'}</span>
-              <span>Chunks: {result?.chunkCount || 0}</span>
-              <span>Duration: {result ? formatDuration(result.duration) : '0:00'}</span>
-              <span>Optimized: {result ? formatBytes(result.optimizedAudioBytes) : '0 B'}</span>
+              ))}
             </div>
           </section>
-        </div>
+        )}
       </section>
     </main>
   );

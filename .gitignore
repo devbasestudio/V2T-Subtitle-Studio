@@ -5,3 +5,5 @@ dist/
 server/work/
 server/uploads/
 .DS_Store
+.vercel
+.env.local

@@ -1,0 +1,15 @@
+node_modules
+dist
+release
+server
+electron
+build
+tmp
+.env
+.env.*
+*.zip
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.ttf
